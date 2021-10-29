@@ -152,7 +152,7 @@ class TnTRhythmBot(discord.Client):
                 self.log(guild_instance, logging.DEBUG, "Trying to play music from a VC I just connected to")
                 await self.play_sound(guild_instance)
         elif args[0] == "!log":
-            self.add_new_logger(guild_instance.guild_id, message.channel, args[1:])
+            self.add_new_logger(guild_instance, message.channel, args[1:])
         elif guild_instance.voice_client == None or not guild_instance.voice_client.is_connected():
             self.log(guild_instance, logging.INFO, "Most be connected to a voice chat if running any commands except !play, !log")
             return
@@ -215,7 +215,8 @@ class TnTRhythmBot(discord.Client):
             #TODO: a try except incase the convertion fails
             channel_id = int(logger_arg[1])
         if log_level_txt == "REMOVE":
-            self.remove_logger(guild_id, channel_id)
+            self.remove_logger(guild_instance, channel_id)
+            return
 
         if guild_id in self.channel_loggers:
             if channel_id in self.channel_loggers[guild_id]:
@@ -225,8 +226,8 @@ class TnTRhythmBot(discord.Client):
                     return #Nothing changed
         # Save the changes in
         self.channel_loggers[guild_id] = { channel_id: DiscordLogger(channel, new_logger_level)}
-        self.guild_instance.logger = logging.Logger(f'{guild_id}')
-        self.guild_instance.logger.addHandler(self.channel_loggers[guild_id][channel_id])
+        guild_instance.logger = logging.Logger(f'{guild_id}')
+        guild_instance.logger.addHandler(self.channel_loggers[guild_id][channel_id])
         with open(CHANNEL_LOGGER_FILE, "w") as f:
             for guild_id, val in self.channel_loggers.items():
                 for channel_id, channel in val.items():
