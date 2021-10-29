@@ -11,21 +11,24 @@ class Music:
     title:str = ""
     downloaded: bool = False
 
+class GuildInstance:
+    voice_client: VoiceClient = None
+    playlist:asyncio.Queue = asyncio.Queue()
+    music_playing: Music = None
+    repeat = False
+
 token  = open('token.txt', 'r').read()
 class TnTRhythmBot(discord.Client):
     def __init__(self, *, loop=None, **options):
         super().__init__(loop=loop, **options)
-        self.voice_client: VoiceClient  = None
-        self.playlist:asyncio.Queue = asyncio.Queue()
-        self.music_playing: Music = None
-        self.repeat = False
+        self.guildMap = {}
     async def on_ready(self):
         print(f'{self.user} has connected to Discord!')
     
-    async def add_to_queue(self, songs):
+    async def add_to_queue(self, guild_instance: GuildInstance,  songs):
         print("added to queue", songs)
         for music in await self.get_music(songs):
-            await self.playlist.put(item=music)
+            await guild_instance.playlist.put(item=music)
 
     async def on_message(self, message: discord.message.Message):
         #print(type(message.author))
@@ -33,6 +36,10 @@ class TnTRhythmBot(discord.Client):
             return
 
         args = message.content.split(" ")
+        if message.guild not in self.guildMap:
+            self.guildMap[message.guild] = GuildInstance()
+
+        guild_instance = self.guildMap[message.guild]
         if len(args) <= 0:
             return
         if args[0] == "!play" and len(args) >= 2:
@@ -43,44 +50,44 @@ class TnTRhythmBot(discord.Client):
             if v_c == None:
                 print("Sadness, no channel")
                 return
-            await self.add_to_queue(args[1:])
-            if(self.voice_client != None and self.voice_client.is_connected()):
-                if self.voice_client.is_playing():
+            await self.add_to_queue(guild_instance, args[1:])
+            if(guild_instance.voice_client != None and guild_instance.voice_client.is_connected()):
+                if guild_instance.voice_client.is_playing():
                     return
                 print("playing from existing")
-                await self.play_sound()
+                await self.play_sound(guild_instance)
             else:
-                self.voice_client = await v_c.connect()
+                guild_instance.voice_client = await v_c.connect()
                 print("Play from new")
-                await self.play_sound()
+                await self.play_sound(guild_instance)
         elif args[0] == "!play" or args[0] == "!resume":
-            if self.voice_client != None and self.voice_client.is_connected() and self.voice_client.is_paused():
+            if guild_instance.voice_client != None and guild_instance.voice_client.is_connected() and guild_instance.voice_client.is_paused():
                 print("attempt to pause")
-                self.voice_client.resume()
+                guild_instance.voice_client.resume()
         elif args[0] == "!pause":
-            if self.voice_client != None and self.voice_client.is_connected() and self.voice_client.is_playing():
+            if guild_instance.voice_client != None and guild_instance.voice_client.is_connected() and guild_instance.voice_client.is_playing():
                 print("attempt to pause")
-                self.voice_client.pause()
+                guild_instance.voice_client.pause()
                 
         elif args[0] == "!quit":
-            if self.voice_client != None and self.voice_client.is_connected():
+            if guild_instance.voice_client != None and guild_instance.voice_client.is_connected():
                 print("attempt to quit")
-                self.clear_queue()
-                self.repeat = False
-                self.voice_client.stop()
-                await self.voice_client.disconnect()
+                self.clear_queue(guild_instance)
+                guild_instance.repeat = False
+                guild_instance.voice_client.stop()
+                await guild_instance.voice_client.disconnect()
         elif args[0] == "!skip":
-            if self.voice_client != None and self.voice_client.is_connected() and self.voice_client.is_playing():
+            if guild_instance.voice_client != None and guild_instance.voice_client.is_connected() and guild_instance.voice_client.is_playing():
                 print("attempt to skip")
-                self.repeat = False
-                self.voice_client.stop()
+                guild_instance.repeat = False
+                guild_instance.voice_client.stop()
         elif args[0] == "!queue":
-            await self.show_queue(message.channel)
+            await guild_instance.show_queue(guild_instance, message.channel)
         elif args[0] == "!repeat":
-            self.repeat = not self.repeat
+            guild_instance.repeat = not guild_instance.repeat
             self.logger("info", f'Repeat: {self.repeat}')
         elif args[0] == "!clear":
-            self.clear_queue()
+            self.clear_queue(guild_instance)
         elif args[0] == "!log":
             #TODO: add it to the logging channels
             pass
@@ -90,38 +97,38 @@ class TnTRhythmBot(discord.Client):
             await self.playlist.get()
             self.playlist.task_done()
     
-    async def show_queue(self, channel):
+    async def show_queue(self, guild_instance: GuildInstance,  channel):
             i: int = 1
             msg:str = "```\n"
-            if self.music_playing != None:
+            if guild_instance.music_playing != None:
                 msg += f'Currently Playing: {self.music_playing.title}'
-                if self.repeat:
+                if guild_instance.repeat:
                     msg += ' (on repeat)'
                 msg += '\n'
             #Kinda bad to call that private variable, but I need a quick read-only of the queue. Consider another structure
-            for music in self.playlist._queue:
+            for music in guild_instance.playlist._queue:
                 msg += f'{i}. {music.title}\n'
                 i += 1
             msg += "```"
             print(msg)
             await self.send_message(msg, channel)
         
-    async def play_sound(self):
-            while not self.playlist.empty():
-                music_to_play:Music = await self.playlist.get()
+    async def play_sound(self, guild_instance: GuildInstance):
+            while not guild_instance.playlist.empty():
+                music_to_play:Music = await guild_instance.playlist.get()
                 while not music_to_play.downloaded:
                      await asyncio.sleep(0.5)
                 while True:
-                    self.voice_client.play(discord.FFmpegPCMAudio(source=music_to_play.file_name))
-                    self.music_playing = music_to_play
+                    guild_instance.voice_client.play(discord.FFmpegPCMAudio(source=music_to_play.file_name))
+                    guild_instance.music_playing = music_to_play
                     print("attempting to play music")
-                    while self.voice_client.is_playing():
+                    while guild_instance.voice_client.is_playing():
                         await asyncio.sleep(0.5)
-                    if self.repeat == False:
+                    if guild_instance.repeat == False:
                         break
-                self.playlist.task_done()
+                guild_instance.playlist.task_done()
             print("playlist empty </3")
-            self.music_playing = None
+            guild_instance.music_playing = None
     
     async def get_music(self, urls:list):
         ret = list()
@@ -166,7 +173,7 @@ class TnTRhythmBot(discord.Client):
         await channel.send(msg)
 
     async def logger(self, level, msg:str, channel):
-        log_msg = f'**{level}:\n {msg}'
+        log_msg = f'**{level}**:\n {msg}'
         print(log_msg)
         await self.send_message(log_msg, channel)
 
