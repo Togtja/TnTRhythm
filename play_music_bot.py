@@ -189,8 +189,11 @@ class TnTRhythmBot(discord.Client):
     def remove_logger(self, guild_instance: GuildInstance, channel_id):
         if guild_instance.guild_id in self.channel_loggers:
             if channel_id in self.channel_loggers[guild_instance.guild_id]:
-                guild_instance.logger.removeHandler(self.channel_loggers[guild_instance.guild_id])
+                self.log(guild_instance, logging.INFO, "Removing logger!")           
+                guild_instance.logger.removeHandler(self.channel_loggers[guild_instance.guild_id][channel_id])
                 del self.channel_loggers[guild_instance.guild_id][channel_id]
+
+                # remove it from the logger file
                 with open(CHANNEL_LOGGER_FILE, "w") as f:
                     for guild_id, val in self.channel_loggers.items():
                         for channel_id, channel in val.items():
@@ -232,6 +235,7 @@ class TnTRhythmBot(discord.Client):
             for guild_id, val in self.channel_loggers.items():
                 for channel_id, channel in val.items():
                     f.write(f'{guild_id} {channel_id} {channel.level}\n')
+        self.log(guild_instance, logging.INFO, "Added Logger")
 
     async def clear_playlist(self, guild_instance: GuildInstance):
         while not guild_instance.playlist.empty():
