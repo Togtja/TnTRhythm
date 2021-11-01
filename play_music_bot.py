@@ -93,7 +93,7 @@ class TnTRhythmBot(discord.Client):
                 self.log(self.guildMap[guild_id], logging.WARNING, f"Could not find the channel: {channel_id}")
                 continue
 
-            self.log(self.guildMap[guild_id], logging.INFO, "added a new logger")
+            self.log(self.guildMap[guild_id], logging.INFO, f"Added a {logging.getLevelName(channel_level)} from logger file")
             self.channel_loggers[guild_id] = { channel_id: DiscordLogger(channel, self.loop, channel_level)}
             self.guildMap[guild_id].logger.addHandler(self.channel_loggers[guild_id][channel_id])
         
@@ -221,19 +221,20 @@ class TnTRhythmBot(discord.Client):
 
         if guild_id in self.channel_loggers:
             if channel_id in self.channel_loggers[guild_id]:
-                if self.channel_loggers[channel_id].level != new_logger_level:
-                    self.channel_loggers[channel_id].level = new_logger_level
+                if self.channel_loggers[guild_id][channel_id].level != new_logger_level:
+                    self.channel_loggers[guild_id][channel_id].level = new_logger_level
                 else:
                     return #Nothing changed
+            else:
+                self.channel_loggers[guild_id][channel_id] = dict()
         # Save the changes in
-        self.channel_loggers[guild_id] = { channel_id: DiscordLogger(channel, self.loop, new_logger_level)}
-        guild_instance.logger = logging.Logger(f'{guild_id}')
+        self.channel_loggers[guild_id][channel_id] = DiscordLogger(channel, self.loop, new_logger_level)
         guild_instance.logger.addHandler(self.channel_loggers[guild_id][channel_id])
         with open(CHANNEL_LOGGER_FILE, "w") as f:
             for guild_id, val in self.channel_loggers.items():
                 for channel_id, channel in val.items():
                     f.write(f'{guild_id} {channel_id} {channel.level}\n')
-        self.log(guild_instance, logging.INFO, "Added Logger")
+        self.log(guild_instance, logging.INFO, f"Created a {log_level_txt} Logger")
 
     async def clear_playlist(self, guild_instance: GuildInstance):
         while not guild_instance.playlist.empty():
