@@ -34,22 +34,20 @@ class CustomFormatter(logging.Formatter):
         return formatter.format(record)
 
 class DiscordLogger:
-    def __init__(self, channel, level: int = logging.INFO) -> None:
+    def __init__(self, channel, loop,  level: int = logging.INFO) -> None:
         self.channel:discord.abc.Messageable = channel
         self.level = level
+        self.loop = loop
     def handle(self, record: logging.LogRecord):
-        loop = asyncio.get_event_loop()
-        loop.create_task(self.channel.send(f'**{record.levelname}**: {record.getMessage()}'))
-
+        self.loop.create_task(self.channel.send(f'**{record.levelname}**: {record.getMessage()}'))
     #async def flush(self):
     #    pass
     #async def write(self, msg):
     #    await self.channel.send("I am send from discord" + msg)
 
-
 class Music:
     youtube_url: str = ""
-    file_name: str = ""
+    stream: str = "" # Can either be file location or a youtube stream (other streams are possible as well)
     id: str = ""
     title: str = ""
     downloaded: bool = False
@@ -96,7 +94,7 @@ class TnTRhythmBot(discord.Client):
                 continue
 
             self.log(self.guildMap[guild_id], logging.INFO, "added a new logger")
-            self.channel_loggers[guild_id] = { channel_id: DiscordLogger(channel, channel_level)}
+            self.channel_loggers[guild_id] = { channel_id: DiscordLogger(channel, self.loop, channel_level)}
             self.guildMap[guild_id].logger.addHandler(self.channel_loggers[guild_id][channel_id])
         
 
@@ -228,7 +226,7 @@ class TnTRhythmBot(discord.Client):
                 else:
                     return #Nothing changed
         # Save the changes in
-        self.channel_loggers[guild_id] = { channel_id: DiscordLogger(channel, new_logger_level)}
+        self.channel_loggers[guild_id] = { channel_id: DiscordLogger(channel, self.loop, new_logger_level)}
         guild_instance.logger = logging.Logger(f'{guild_id}')
         guild_instance.logger.addHandler(self.channel_loggers[guild_id][channel_id])
         with open(CHANNEL_LOGGER_FILE, "w") as f:
@@ -264,14 +262,22 @@ class TnTRhythmBot(discord.Client):
         msg += "```"
         return msg
         #await self.send_message(msg, channel)
-        
+    
     async def play_sound(self, guild_instance: GuildInstance):
             while not guild_instance.playlist.empty():
                 music_to_play:Music = await guild_instance.playlist.get()
                 while not music_to_play.downloaded:
                      await asyncio.sleep(0.5)
-                while True:
-                    guild_instance.voice_client.play(discord.FFmpegPCMAudio(source=music_to_play.file_name))
+                while True: #It's a do while guild_instance.repeat == True
+                    FFMPEG_OPTS = {'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5', 'options': '-vn'}
+                    def after_log(e):
+                        if e is None:
+                            self.log(guild_instance, logging.DEBUG, f"Done playing '{music_to_play.title}'")
+                        else:
+                            self.log(guild_instance, logging.ERROR, f"Done playing '{music_to_play.title}, got error: {e}")
+                    #self.loop.create_task(after_log)
+                    guild_instance.voice_client.play(discord.FFmpegPCMAudio(music_to_play.stream, **FFMPEG_OPTS), after=after_log )
+                    #guild_instance.voice_client.source = discord.PCMVolumeTransformer(guild_instance.voice_client.source)
                     guild_instance.music_playing = music_to_play
                     self.log(guild_instance, logging.DEBUG, "The play command (in the code) has been given, and we are _trying_ jam")
                     while guild_instance.voice_client.is_playing():
@@ -284,40 +290,21 @@ class TnTRhythmBot(discord.Client):
     
     async def get_music(self, guild_instance: GuildInstance, urls:list):
         ret = list()
-        youtube_urls = list()
-        filenames  = list()
         for u in urls:
             m = Music()
             m.youtube_url = u
-        
-            video_info = yt_dlp.YoutubeDL().extract_info(
-                url =  m.youtube_url,download=False
-            )
+
+            ydl_opts = {
+                'format': 'bestaudio/best',
+                'logger': guild_instance.logger
+            }
+            
+            video_info = yt_dlp.YoutubeDL(ydl_opts).extract_info(url= m.youtube_url, download=False)
             m.id = video_info['id']
             m.title = video_info['title']
-            m.file_name = "music/" + m.id + ".mp3"
-            filenames.append(m.file_name)
-            if os.path.exists(m.file_name):
-                m.downloaded = True
-                ret.append(m)
-                continue
-
-            youtube_urls.append(video_info['webpage_url'])
-            ret.append(m)
-
-        options={
-            'format':'bestaudio/best',
-            'keepvideo':False,
-            'outtmpl': '%(id)s.mp3',
-            'paths': {'home': "music/"}
-        }
-        with yt_dlp.YoutubeDL(options) as ydl:
-            ydl.download(youtube_urls)
-
-        self.log(guild_instance, logging.DEBUG, f"I have completed the downloads of {filenames}")
-        for m in ret:
+            m.stream = video_info['formats'][0]['url']
             m.downloaded = True
-
+            ret.append(m)
         return ret
 
     async def send_message(self, msg: str, channel:discord.abc.Messageable):
