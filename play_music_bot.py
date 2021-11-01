@@ -10,6 +10,7 @@ import logging
 
 token  = open('token.txt', 'r').read()
 CHANNEL_LOGGER_FILE = "channel_logger.txt"
+COMMANDS_FILE = "commands.txt" #aka the !help list of what commands do
 
 class CustomFormatter(logging.Formatter):
 
@@ -76,28 +77,6 @@ class TnTRhythmBot(discord.Client):
         self.logger.addHandler(ch)
         self.channel_loggers = {}
 
-    def add_loggers(self):
-        if not pathlib.Path(CHANNEL_LOGGER_FILE).exists():
-            return
-
-        #Add the channel loggers
-        for channel_logger in open(CHANNEL_LOGGER_FILE, "r").readlines():
-            guild_id_str, channel_str_id, channel_level_str = channel_logger.split()
-            guild_id = int(guild_id_str)
-            self.guildMap[guild_id] = GuildInstance(guild_id)
-            channel_id = int(channel_str_id)
-            channel_level = int(channel_level_str)
-
-            channel = self.get_channel(id = channel_id)
-            if channel == None:
-                self.log(self.guildMap[guild_id], logging.WARNING, f"Could not find the channel: {channel_id}")
-                continue
-
-            self.log(self.guildMap[guild_id], logging.INFO, f"Added a {logging.getLevelName(channel_level)} from logger file")
-            self.channel_loggers[guild_id] = { channel_id: DiscordLogger(channel, self.loop, channel_level)}
-            self.guildMap[guild_id].logger.addHandler(self.channel_loggers[guild_id][channel_id])
-        
-
     async def on_ready(self):
         self.add_loggers()
         self.log(None, logging.DEBUG, f'{self.user} has connected to Discord!')
@@ -151,6 +130,10 @@ class TnTRhythmBot(discord.Client):
                 await self.play_sound(guild_instance)
         elif args[0] == "!log":
             self.add_new_logger(guild_instance, message.channel, args[1:])
+        elif args[0] == "!help":
+            command_help = open(COMMANDS_FILE, "r").read()
+            msg =f"```\n{command_help}\n```"
+            await self.send_message(msg, message.channel)
         elif guild_instance.voice_client == None or not guild_instance.voice_client.is_connected():
             self.log(guild_instance, logging.INFO, "Most be connected to a voice chat if running any commands except !play, !log")
             return
@@ -159,6 +142,9 @@ class TnTRhythmBot(discord.Client):
             if guild_instance.voice_client.is_paused():
                 self.log(guild_instance, logging.DEBUG, "The Resume/Play Command has been given")
                 guild_instance.voice_client.resume()
+            else:
+                self.log(guild_instance, logging.INFO, "Nothing to play/resume")
+
         elif args[0] == "!pause":
             if guild_instance.voice_client.is_playing():
                 self.log(guild_instance, logging.DEBUG, "The Pause Command has been given")
@@ -183,6 +169,33 @@ class TnTRhythmBot(discord.Client):
                 self.log(guild_instance, logging.INFO, f'Repeat set to {guild_instance.repeat}')
         elif args[0] == "!clear":
             self.clear_playlist(guild_instance)
+
+    def add_loggers(self):
+        if not pathlib.Path(CHANNEL_LOGGER_FILE).exists():
+            return
+
+        #Add the channel loggers
+        for channel_logger in open(CHANNEL_LOGGER_FILE, "r").readlines():
+            guild_id_str, channel_str_id, channel_level_str = channel_logger.split()
+            guild_id = int(guild_id_str)
+            if guild_id not in self.guildMap:
+                self.guildMap[guild_id] = GuildInstance(guild_id)
+                
+            channel_id = int(channel_str_id)
+            channel_level = int(channel_level_str)
+
+            channel = self.get_channel(id = channel_id)
+            if channel == None:
+                self.log(self.guildMap[guild_id], logging.WARNING, f"Could not find the channel: {channel_id}")
+                continue
+
+            self.log(self.guildMap[guild_id], logging.INFO, f"Added a {logging.getLevelName(channel_level)} from logger file g_id: {guild_id} ch_id: {channel_id}")
+
+            if guild_id not in self.channel_loggers:
+                self.channel_loggers[guild_id] = dict()
+
+            self.channel_loggers[guild_id][channel_id] = DiscordLogger(channel, self.loop, channel_level)
+            self.guildMap[guild_id].logger.addHandler(self.channel_loggers[guild_id][channel_id])
 
     def remove_logger(self, guild_instance: GuildInstance, channel_id):
         if guild_instance.guild_id in self.channel_loggers:
@@ -209,7 +222,7 @@ class TnTRhythmBot(discord.Client):
                 pass
             else:
                 #Return a message about falling to create a logger to sender
-                self.send_message(f'{log_level_txt} is not a valid logging level (CRITICAL, ERROR, WARNING, INFO, DEBUG or REMOVE)')
+                self.send_message(f'{log_level_txt} is not a valid logging level (CRITICAL, ERROR, WARNING, INFO, DEBUG or REMOVE)', channel)
                 return
         channel_id = channel.id
         if len(logger_arg) == 2:
@@ -222,10 +235,12 @@ class TnTRhythmBot(discord.Client):
         if guild_id in self.channel_loggers:
             if channel_id in self.channel_loggers[guild_id]:
                 if self.channel_loggers[guild_id][channel_id].level != new_logger_level:
+                    self.log(guild_instance, logging.DEBUG, "There already exist a logger, but changling level")
                     self.channel_loggers[guild_id][channel_id].level = new_logger_level
                 else:
                     return #Nothing changed
             else:
+                self.log(guild_instance, logging.DEBUG, "New channel who this")
                 self.channel_loggers[guild_id][channel_id] = dict()
         # Save the changes in
         self.channel_loggers[guild_id][channel_id] = DiscordLogger(channel, self.loop, new_logger_level)
