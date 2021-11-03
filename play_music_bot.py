@@ -138,13 +138,12 @@ class TnTRhythmBot(discord.Client):
             self.log(guild_instance, logging.INFO, "Most be connected to a voice chat if running any commands except !play, !log")
             return
         #COMMADS BELOW HERE REQUIRES A VOICE CLIENT AND A CONNECT TO A VOICE CHANNEL  
-        elif args[0] == "!play" or args[0] == "!resume":
+        elif args[0] == "!play" or args[0] == "!resume" or args[0] == "!continue":
             if guild_instance.voice_client.is_paused():
                 self.log(guild_instance, logging.DEBUG, "The Resume/Play Command has been given")
                 guild_instance.voice_client.resume()
             else:
                 self.log(guild_instance, logging.INFO, "Nothing to play/resume")
-
         elif args[0] == "!pause":
             if guild_instance.voice_client.is_playing():
                 self.log(guild_instance, logging.DEBUG, "The Pause Command has been given")
@@ -163,7 +162,7 @@ class TnTRhythmBot(discord.Client):
         elif args[0] == "!queue" or args[0] == "!playlist":
             msg_playlist = self.get_printable_playlist(guild_instance)
             await self.send_message(msg_playlist,  message.channel)
-        elif args[0] == "!repeat":
+        elif args[0] == "!repeat" or args[0] == "!loop":
             if guild_instance.voice_client.is_playing():
                 guild_instance.repeat = not guild_instance.repeat
                 self.log(guild_instance, logging.INFO, f'Repeat set to {guild_instance.repeat}')
@@ -180,7 +179,7 @@ class TnTRhythmBot(discord.Client):
             guild_id = int(guild_id_str)
             if guild_id not in self.guildMap:
                 self.guildMap[guild_id] = GuildInstance(guild_id)
-                
+
             channel_id = int(channel_str_id)
             channel_level = int(channel_level_str)
 
@@ -189,13 +188,17 @@ class TnTRhythmBot(discord.Client):
                 self.log(self.guildMap[guild_id], logging.WARNING, f"Could not find the channel: {channel_id}")
                 continue
 
-            self.log(self.guildMap[guild_id], logging.INFO, f"Added a {logging.getLevelName(channel_level)} from logger file g_id: {guild_id} ch_id: {channel_id}")
 
-            if guild_id not in self.channel_loggers:
+            if guild_id in self.channel_loggers:
+                if channel_id in self.channel_loggers[guild_id]:
+                    return #Already exist (this mostly happen when on_ready get called again due to losing connect)
+            else:
                 self.channel_loggers[guild_id] = dict()
 
             self.channel_loggers[guild_id][channel_id] = DiscordLogger(channel, self.loop, channel_level)
             self.guildMap[guild_id].logger.addHandler(self.channel_loggers[guild_id][channel_id])
+            
+            self.log(self.guildMap[guild_id], logging.DEBUG, f"Added a {logging.getLevelName(channel_level)} from logger file g_id: {guild_id} ch_id: {channel_id}")
 
     def remove_logger(self, guild_instance: GuildInstance, channel_id):
         if guild_instance.guild_id in self.channel_loggers:
@@ -209,6 +212,10 @@ class TnTRhythmBot(discord.Client):
                     for guild_id, val in self.channel_loggers.items():
                         for channel_id, channel in val.items():
                             f.write(f'{guild_id} {channel_id} {channel.level}\n')
+            else:
+                self.send_message("There is no logger in the channel to remove", self.get_channel(id = channel_id))
+        else:
+            self.send_message("There is no logger in this guild to remove", self.get_channel(id = channel_id))
 
     def add_new_logger(self, guild_instance: GuildInstance, channel, logger_arg):
         guild_id = guild_instance.guild_id
