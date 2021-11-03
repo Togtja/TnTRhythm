@@ -17,13 +17,14 @@ class CustomFormatter(logging.Formatter):
     grey = "\x1b[38;21m"
     yellow = "\x1b[33;21m"
     red = "\x1b[31;21m"
+    green = "\x1b[32;21m"
     bold_red = "\x1b[31;1m"
     reset = "\x1b[0m"
     format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s (%(filename)s:%(lineno)d)"
 
     FORMATS = {
         logging.DEBUG: grey + format + reset,
-        logging.INFO: grey + format + reset,
+        logging.INFO: green + format + reset,
         logging.WARNING: yellow + format + reset,
         logging.ERROR: red + format + reset,
         logging.CRITICAL: bold_red + format + reset
@@ -62,7 +63,6 @@ class GuildInstance:
         self.repeat: bool = False
         self.logger: logging.Logger = logging.Logger(f'{guild_id}')
 
-
 class TnTRhythmBot(discord.Client):
     def __init__(self, *, loop=None, **options):
         super().__init__(loop=loop, **options)
@@ -75,6 +75,13 @@ class TnTRhythmBot(discord.Client):
 
         ch.setFormatter(CustomFormatter())
         self.logger.addHandler(ch)
+        if pathlib.Path("TnTRhythm.log").exists():
+            os.remove("TnTRhythm.log")
+
+        fh = logging.FileHandler("TnTRhythm.log")
+        fh.setLevel(logging.DEBUG)
+        self.logger.addHandler(fh)
+
         self.channel_loggers = {}
 
     async def on_ready(self):
@@ -245,10 +252,11 @@ class TnTRhythmBot(discord.Client):
                     self.log(guild_instance, logging.DEBUG, "There already exist a logger, but changling level")
                     self.channel_loggers[guild_id][channel_id].level = new_logger_level
                 else:
-                    return #Nothing changed
-            else:
-                self.log(guild_instance, logging.DEBUG, "New channel who this")
-                self.channel_loggers[guild_id][channel_id] = dict()
+                    self.log(guild_instance, logging.INFO, "There already exist a logger with this level here")
+                return #
+        else:
+            self.log(guild_instance, logging.DEBUG, "New channel who this")
+            self.channel_loggers[guild_id] = dict()
         # Save the changes in
         self.channel_loggers[guild_id][channel_id] = DiscordLogger(channel, self.loop, new_logger_level)
         guild_instance.logger.addHandler(self.channel_loggers[guild_id][channel_id])
