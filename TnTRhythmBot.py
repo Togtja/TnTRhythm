@@ -102,7 +102,6 @@ class TnTRhythmBot(discord.Client):
             await guild_instance.playlist.put(music)
 
     async def on_message(self, message: discord.message.Message):
-        #print(type(message.channel))
         if message.author == self.user:
             return
         #Get the guild instanced that sent the message
@@ -112,10 +111,9 @@ class TnTRhythmBot(discord.Client):
             self.guildMap[message.guild.id] = GuildInstance(message.guild.id)
 
         guild_instance: GuildInstance = self.guildMap[message.guild.id]
-        if len(args) <= 0:
+        if len(args) <= 0 or len(args[0]) <= 0 or args[0][0] != "!":
             return
-        elif args[0][0] != "!":
-            return
+
         if args[0] == "!play" and len(args) >= 2:
             if(message.author.voice == None):
                 self.log(guild_instance, logging.INFO, "Unable to find voice chat to join (you must be in a voice chat channel when calling the !play command")
