@@ -1,10 +1,17 @@
 import pathlib
+import time
+import subprocess
+import threading
+from typing import Callable
 import discord
+from discord.member import VoiceState
 from discord.voice_client import VoiceClient
+from discord.opus import _OpusStruct
 import asyncio
 import os
 import yt_dlp
-
+from enum import Enum
+import ffmpeg
 import logging
 
 
@@ -12,7 +19,7 @@ token  = open('token.txt', 'r').read()
 CHANNEL_LOGGER_FILE = "channel_logger.txt"
 COMMANDS_FILE = "commands.txt" #aka the !help list of what commands do
 
-class CustomFormatter(logging.Formatter):
+class CustomConsoleFormatter(logging.Formatter):
 
     grey = "\x1b[38;21m"
     yellow = "\x1b[33;21m"
@@ -63,6 +70,100 @@ class GuildInstance:
         self.repeat: bool = False
         self.logger: logging.Logger = logging.Logger(f'{guild_id}')
 
+class TnTAudioSource(discord.voice_client.AudioSource):
+    def __init__(self, stream, log:Callable):
+        self.log = log
+        args = {
+            "reconnect": "1",
+            "reconnect_streamed": "1",
+            "reconnect_delay_max": "5",
+            "vn": "",
+            "format": "s16le",
+            "ar": "48000",
+            "ac": "2",
+            "loglevel": "warning"
+        }
+        self.process: subprocess.Popen = (
+            ffmpeg.input(stream, reconnect="1", reconnect_streamed="1", reconnect_delay_max="5")
+            .output('pipe:', format='s16le', ar='48000', ac='2', loglevel="warning")
+            .run_async(pipe_stdout=True, pipe_stderr=True)
+        )
+        self.running = True
+        self.get_error_task= threading.Thread(target=self.get_error)
+        self.get_error_task.start()
+        
+    def read(self):
+        ret = self.process.stdout.read(_OpusStruct.FRAME_SIZE)
+        if len(ret) != _OpusStruct.FRAME_SIZE:
+            return b''
+        return ret
+
+    def get_error(self):
+        while self.running == True:
+            read_msg = self.process.stderr.readline().decode("utf-8")
+            if len(read_msg) > 1:
+                self.log(logging.WARNING, read_msg)
+            time.sleep(0.1)
+
+    def cleanup(self):
+        
+        try:
+            self.process.kill()
+        except Exception:
+            self.log(logging.DEBUG, f"Ignoring error attempting to kill ffmpeg process {self.process.pid}")
+        
+        
+        if self.process.poll() is None:
+            self.log(logging.DEBUG, f'ffmpeg process {self.process.pid} has not terminated. Waiting to terminate...')
+            self.process.communicate()
+            self.log(logging.DEBUG, f'ffmpeg process {self.process.pid} should have terminated with a return code of {self.process.returncode}.')
+        else:
+            self.log(logging.DEBUG, f'ffmpeg process {self.process.pid} successfully terminated with return code of {self.process.returncode}.')
+
+    def __del__(self):
+        self.running = False
+        self.get_error_task.join()
+        self.cleanup()
+        return super().__del__()
+
+
+#To ensure we only trigger or bot on message that include this
+class Commands(Enum):
+    UNKNOWN = 0
+    HELP = 1
+    PLAY = 2
+    RESUME = 3
+    PAUSE = 4
+    SKIP = 5
+    QUEUE = 6
+    LOOP = 7
+    CLEAR_QUEUE = 8
+    QUIT = 9
+    LOG = 100
+    def from_string(string:str) -> Enum:
+        if string == '!help':
+            return Commands.HELP
+        elif string == '!play':
+            return Commands.PLAY
+        elif string == '!resume' or string == "!continue":
+            return Commands.RESUME
+        elif string == '!pause':
+            return Commands.PAUSE
+        elif string == '!skip':
+            return Commands.SKIP
+        elif string == '!queue' or string == "!playlist":
+            return Commands.QUEUE
+        elif string == '!loop' or string == "!repeat":
+            return Commands.LOOP
+        elif string == '!clear':
+            return Commands.CLEAR_QUEUE
+        elif string == '!quit' or string == "!leave":
+            return Commands.QUIT
+        elif string == '!log':
+            return Commands.LOG
+        else:
+            return Commands.UNKNOWN
+
 class TnTRhythmBot(discord.Client):
     def __init__(self, *, loop=None, **options):
         super().__init__(loop=loop, **options)
@@ -73,12 +174,13 @@ class TnTRhythmBot(discord.Client):
         ch = logging.StreamHandler()
         ch.setLevel(logging.DEBUG)
 
-        ch.setFormatter(CustomFormatter())
+        ch.setFormatter(CustomConsoleFormatter())
         self.logger.addHandler(ch)
         if pathlib.Path("TnTRhythm.log").exists():
             os.remove("TnTRhythm.log")
 
         fh = logging.FileHandler("TnTRhythm.log")
+        fh.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s (%(filename)s:%(lineno)d)"))
         fh.setLevel(logging.DEBUG)
         self.logger.addHandler(fh)
 
@@ -87,7 +189,7 @@ class TnTRhythmBot(discord.Client):
     async def on_ready(self):
         self.add_loggers()
         self.log(None, logging.DEBUG, f'{self.user} has connected to Discord!')
-
+        await self.change_presence(activity=discord.Activity(type=discord.ActivityType.listening, name="!help"))
     
     async def add_to_playlist(self, guild_instance: GuildInstance,  songs:list):
         """Add a list of song/music YouTube link to the playlist
@@ -113,66 +215,94 @@ class TnTRhythmBot(discord.Client):
         guild_instance: GuildInstance = self.guildMap[message.guild.id]
         if len(args) <= 0 or len(args[0]) <= 0 or args[0][0] != "!":
             return
+        command = Commands.from_string(args[0])
+        if command == Commands.UNKNOWN:
+            return #Not a command we trigger on
 
-        if args[0] == "!play" and len(args) >= 2:
-            if(message.author.voice == None):
-                self.log(guild_instance, logging.INFO, "Unable to find voice chat to join (you must be in a voice chat channel when calling the !play command")
-                return
+        elif command == Commands.PLAY and len(args) >= 2:
+            try:
+                await self.play_command(guild_instance, message.author.voice, args[1:])
+            except Exception as e:
+                self.log(guild_instance, logging.ERROR, f'failed to play music with exception: {e}')
 
-            v_c: discord.VoiceChannel = message.author.voice.channel
-            if v_c == None:
-                self.log(guild_instance, logging.INFO, "Okay I don't know exactly why I can't find the channel, tell me what you did to get this")
-                return
-            await self.add_to_playlist(guild_instance, args[1:])
-            if(guild_instance.voice_client != None and guild_instance.voice_client.is_connected()):
-                if guild_instance.voice_client.is_playing():
-                    return
-                self.log(guild_instance, logging.DEBUG, "Trying to play music from a VC I am in")
-                await self.play_sound(guild_instance)
-            else:
-                guild_instance.voice_client = await v_c.connect()
-                self.log(guild_instance, logging.DEBUG, "Trying to play music from a VC I just connected to")
-                await self.play_sound(guild_instance)
-        elif args[0] == "!log":
-            self.add_new_logger(guild_instance, message.channel, args[1:])
-        elif args[0] == "!help":
+        elif command == Commands.LOG:
+            try:
+                self.add_new_logger(guild_instance, message.channel, args[1:])
+            except Exception as e:
+                self.log(guild_instance, logging.ERROR, f'failed to add a new logger with exception: {e}')
+
+        elif command == Commands.HELP:
             command_help = open(COMMANDS_FILE, "r").read()
             msg =f"```\n{command_help}\n```"
             await self.send_message(msg, message.channel)
+
+        #Ensure we have a voice client and is connected
         elif guild_instance.voice_client == None or not guild_instance.voice_client.is_connected():
             self.log(guild_instance, logging.INFO, "Most be connected to a voice chat if running any commands except !play, !log")
             return
-        #COMMADS BELOW HERE REQUIRES A VOICE CLIENT AND A CONNECT TO A VOICE CHANNEL  
-        elif args[0] == "!play" or args[0] == "!resume" or args[0] == "!continue":
+        #COMMADS BELOW HERE REQUIRES A VOICE CLIENT AND A CONNETION TO A VOICE CHANNEL  
+        elif command == Commands.PLAY or command == Commands.RESUME:
             if guild_instance.voice_client.is_paused():
                 self.log(guild_instance, logging.DEBUG, "The Resume/Play Command has been given")
                 guild_instance.voice_client.resume()
             else:
                 self.log(guild_instance, logging.INFO, "Nothing to play/resume")
-        elif args[0] == "!pause":
+                
+        elif command == Commands.PAUSE:
             if guild_instance.voice_client.is_playing():
                 self.log(guild_instance, logging.DEBUG, "The Pause Command has been given")
-                guild_instance.voice_client.pause()        
-        elif args[0] == "!quit" or args[0] == "!leave":
+                guild_instance.voice_client.pause()
+
+        elif command == Commands.QUIT:
             self.log(guild_instance, logging.DEBUG, "Good bye, I leave now")
-            self.clear_playlist(guild_instance)
+            try:
+                self.clear_playlist(guild_instance)
+            except Exception as e:
+                self.log(guild_instance, logging.ERROR, f'failed to clear playlist while quiting with exception: {e}')
             guild_instance.repeat = False
             guild_instance.voice_client.stop()
             await guild_instance.voice_client.disconnect()
-        elif args[0] == "!skip":
+
+        elif command == Commands.SKIP:
             if guild_instance.voice_client.is_playing():
                 self.log(guild_instance, logging.DEBUG, "Trying to skip this banger")
                 guild_instance.repeat = False
                 guild_instance.voice_client.stop()
-        elif args[0] == "!queue" or args[0] == "!playlist":
+
+        elif command == Commands.QUEUE:
             msg_playlist = self.get_printable_playlist(guild_instance)
             await self.send_message(msg_playlist,  message.channel)
-        elif args[0] == "!repeat" or args[0] == "!loop":
+
+        elif command == Commands.LOOP:
             if guild_instance.voice_client.is_playing():
                 guild_instance.repeat = not guild_instance.repeat
                 self.log(guild_instance, logging.INFO, f'Repeat set to {guild_instance.repeat}')
-        elif args[0] == "!clear":
-            self.clear_playlist(guild_instance)
+
+        elif command == Commands.CLEAR_QUEUE:
+            try:
+                self.clear_playlist(guild_instance)
+            except Exception as e:
+                self.log(guild_instance, logging.ERROR, f'failed to clear playlist with exception: {e}')
+
+    async def play_command(self, guild_instance: GuildInstance, voice_state:VoiceState, songs:list):
+        if(voice_state == None):
+            self.log(guild_instance, logging.INFO, "Unable to find voice chat to join (you must be in a voice chat channel when calling the !play command")
+            return
+
+        v_c: discord.VoiceChannel = voice_state.channel
+        if v_c == None:
+            self.log(guild_instance, logging.INFO, "Okay I don't know exactly why I can't find the channel, tell me what you did to get this")
+            return
+        await self.add_to_playlist(guild_instance, songs)
+        if(guild_instance.voice_client != None and guild_instance.voice_client.is_connected()):
+            if guild_instance.voice_client.is_playing():
+                return
+            self.log(guild_instance, logging.DEBUG, "Trying to play music from a VC I am in")
+            await self.play_sound(guild_instance)
+        else:
+            guild_instance.voice_client = await v_c.connect()
+            self.log(guild_instance, logging.DEBUG, "Trying to play music from a VC I just connected to")
+            await self.play_sound(guild_instance)
 
     def add_loggers(self):
         if not pathlib.Path(CHANNEL_LOGGER_FILE).exists():
@@ -293,19 +423,20 @@ class TnTRhythmBot(discord.Client):
         #await self.send_message(msg, channel)
     
     async def play_sound(self, guild_instance: GuildInstance):
+            def music_log(level, msg):
+                self.log(guild_instance, level, msg)
             while not guild_instance.playlist.empty():
                 music_to_play:Music = await guild_instance.playlist.get()
                 while not music_to_play.downloaded:
                      await asyncio.sleep(0.5)
                 while True: #It's a do while guild_instance.repeat == True
-                    FFMPEG_OPTS = {'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5', 'options': '-vn'}
                     def after_log(e):
                         if e is None:
                             self.log(guild_instance, logging.DEBUG, f"Done playing '{music_to_play.title}'")
                         else:
                             self.log(guild_instance, logging.ERROR, f"Done playing '{music_to_play.title}, got error: {e}")
-                    #self.loop.create_task(after_log)
-                    guild_instance.voice_client.play(discord.FFmpegPCMAudio(music_to_play.stream, **FFMPEG_OPTS), after=after_log )
+
+                    guild_instance.voice_client.play(TnTAudioSource(music_to_play.stream, music_log), after=after_log )
                     #guild_instance.voice_client.source = discord.PCMVolumeTransformer(guild_instance.voice_client.source)
                     guild_instance.music_playing = music_to_play
                     self.log(guild_instance, logging.DEBUG, "The play command (in the code) has been given, and we are _trying_ jam")
