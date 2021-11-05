@@ -11,6 +11,7 @@ import asyncio
 import os
 import yt_dlp
 from enum import Enum
+from dataclasses import dataclass
 import ffmpeg
 import logging
 
@@ -54,12 +55,12 @@ class DiscordLogger:
     #async def write(self, msg):
     #    await self.channel.send("I am send from discord" + msg)
 
+@dataclass
 class Music:
     youtube_url: str = ""
     stream: str = "" # Can either be file location or a youtube stream (other streams are possible as well)
     id: str = ""
     title: str = ""
-    downloaded: bool = False
 
 class GuildInstance:
     def __init__(self, guild_id) -> None:
@@ -73,19 +74,20 @@ class GuildInstance:
 class TnTAudioSource(discord.voice_client.AudioSource):
     def __init__(self, stream, log:Callable):
         self.log = log
-        args = {
+        in_args= {
             "reconnect": "1",
             "reconnect_streamed": "1",
-            "reconnect_delay_max": "5",
-            "vn": "",
+            "reconnect_delay_max": "5"
+        }
+        out_args = {
             "format": "s16le",
             "ar": "48000",
             "ac": "2",
             "loglevel": "warning"
         }
         self.process: subprocess.Popen = (
-            ffmpeg.input(stream, reconnect="1", reconnect_streamed="1", reconnect_delay_max="5")
-            .output('pipe:', format='s16le', ar='48000', ac='2', loglevel="warning")
+            ffmpeg.input(stream, **in_args)
+            .output('pipe:', **out_args)
             .run_async(pipe_stdout=True, pipe_stderr=True)
         )
         self.running = True
@@ -427,8 +429,6 @@ class TnTRhythmBot(discord.Client):
                 self.log(guild_instance, level, msg)
             while not guild_instance.playlist.empty():
                 music_to_play:Music = await guild_instance.playlist.get()
-                while not music_to_play.downloaded:
-                     await asyncio.sleep(0.5)
                 while True: #It's a do while guild_instance.repeat == True
                     def after_log(e):
                         if e is None:
@@ -450,21 +450,14 @@ class TnTRhythmBot(discord.Client):
     
     async def get_music(self, guild_instance: GuildInstance, urls:list):
         ret = list()
-        for u in urls:
-            m = Music()
-            m.youtube_url = u
-
+        for url in urls:
             ydl_opts = {
                 'format': 'bestaudio/best',
                 'logger': guild_instance.logger
             }
             
-            video_info = yt_dlp.YoutubeDL(ydl_opts).extract_info(url= m.youtube_url, download=False)
-            m.id = video_info['id']
-            m.title = video_info['title']
-            m.stream = video_info['formats'][0]['url']
-            m.downloaded = True
-            ret.append(m)
+            video_info = yt_dlp.YoutubeDL(ydl_opts).extract_info(url= url, download=False)
+            ret.append(Music(url,  video_info['formats'][0]['url'], video_info['id'], video_info['title']))
         return ret
 
     async def send_message(self, msg: str, channel:discord.abc.Messageable):
