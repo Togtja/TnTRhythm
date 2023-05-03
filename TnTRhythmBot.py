@@ -457,7 +457,7 @@ class TnTRhythmBot(discord.Client):
             }
             
             video_info = yt_dlp.YoutubeDL(ydl_opts).extract_info(url= url, download=False)
-            ret.append(Music(url,  video_info['formats'][0]['url'], video_info['id'], video_info['title']))
+            ret.append(Music(url,  video_info['url'], video_info['id'], video_info['title']))
         return ret
 
     async def send_message(self, msg: str, channel:discord.abc.Messageable):
@@ -474,6 +474,7 @@ class TnTRhythmBot(discord.Client):
             if guild_instance.logger is not None:
                 guild_instance.logger.log(level, msg)
         
-
-client = TnTRhythmBot()
+intents = discord.Intents.default()
+intents.message_content = True
+client = TnTRhythmBot(intents=intents)
 client.run(token)
